@@ -21,7 +21,7 @@ var menuItems = []MenuItem{
 }
 
 var currentIndex = 0
-var formItems = []string{"URL", "Username", "Password", "Add"}
+var formItems = []string{"URL", "Username", "Password"}
 var formIndex = 0
 var formMode = false
 var formInput = map[string]string{
@@ -51,6 +51,41 @@ func saveConfig() {
 	viper.WriteConfigAs("config.yaml")
 }
 
+func printLineWithPadding(s tcell.Screen, str string, x int, y int, style tcell.Style, padding int) {
+	startX := x + ((padding - len(str)) / 2)
+	for _, r := range str {
+		s.SetContent(startX, y, r, nil, style)
+		startX++
+	}
+}
+
+func printCenteredLineWithPadding(s tcell.Screen, str string, xStart, y int, style tcell.Style, padding int) {
+	boxWidth := 2 * padding
+	strStart := xStart + (boxWidth-len(str))/2 + 2
+	for _, r := range str {
+		s.SetContent(strStart, y, r, nil, style)
+		strStart++
+	}
+}
+
+func drawBorder(s tcell.Screen, x1, x2, y1, y2 int, style tcell.Style) {
+	// Draw horizontal borders
+	for x := x1; x <= x2; x++ {
+		s.SetContent(x, y1, '-', nil, style)
+		s.SetContent(x, y2, '-', nil, style)
+	}
+	// Draw vertical borders
+	for y := y1; y <= y2; y++ {
+		s.SetContent(x1, y, '|', nil, style)
+		s.SetContent(x2, y, '|', nil, style)
+	}
+	// Draw corners
+	s.SetContent(x1, y1, '+', nil, style)
+	s.SetContent(x1, y2, '+', nil, style)
+	s.SetContent(x2, y1, '+', nil, style)
+	s.SetContent(x2, y2, '+', nil, style)
+}
+
 func main() {
 	// Create a new screen
 	s, err := tcell.NewScreen()
@@ -77,32 +112,45 @@ func main() {
 
 	// Function to draw the menu items
 	drawMenu := func() {
+		width, height := s.Size()
+		startY := (height - len(menuItems)) / 2
+		padding := 10
+		maxLength := len(menuItems[0].Name) + padding
+		xStart := (width - maxLength) / 2
+		xEnd := xStart + maxLength
+		drawBorder(s, xStart-1, xEnd+1, startY-1, startY+len(menuItems)+1, style)
+
 		for i, item := range menuItems {
-			style := style
+			currentStyle := style
 			if i == currentIndex {
-				style = selectedStyle
+				currentStyle = selectedStyle
 			}
-			printLine(s, item.Name, 0, i, style)
+			printCenteredLineWithPadding(s, item.Name, xStart, startY+i, currentStyle, padding)
 		}
 	}
 
 	// Function to draw the form items
 	drawForm := func() {
+		width, height := s.Size()
+		startY := (height - len(formItems)) / 2
+		padding := 10
+		xStart := (width - len(formItems[0]) - padding) / 2
+		xEnd := xStart + len(formItems[0]) + padding
+		drawBorder(s, xStart-1, xEnd+1, startY-1, startY+len(formItems)+2, style)
+
 		for i, item := range formItems {
-			style := style
+			currentStyle := style
 			if i == formIndex {
-				style = selectedStyle
+				currentStyle = selectedStyle
 			}
-			if item != "Add" {
-				input := formInput[item]
-				if item == "Password" {
-					input = strings.Repeat("*", len(input))
-				}
-				printLine(s, item+": "+input, 0, i, style)
-			} else {
-				printLine(s, item, 0, i, style)
+			input := formInput[item]
+			if item == "Password" {
+				input = strings.Repeat("*", len(input))
 			}
+			printLineWithPadding(s, item+": "+input, xStart, startY+i, currentStyle, padding)
 		}
+
+		printCenteredLineWithPadding(s, "Add", xStart, startY+len(formItems)+1, style, padding)
 	}
 
 	if !formMode {
