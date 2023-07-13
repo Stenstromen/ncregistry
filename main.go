@@ -2,11 +2,24 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v2"
 )
+
+type Repository struct {
+	Registry  string
+	Name      string
+	Tag       string
+	CreatedAt time.Time
+	Size      int64
+}
 
 // MenuItem struct
 type MenuItem struct {
@@ -18,37 +31,45 @@ var menuItems = []MenuItem{
 	{"Add registry", false},
 	{"Remove registry", false},
 	{"Connect to registry", false},
+	{"Exit", false},
 }
 
 var currentIndex = 0
-var formItems = []string{"URL", "Username", "Password"}
+var formItems = []string{"URL", "Username", "Password", "Save"}
 var formIndex = 0
 var formMode = false
+var registryMode = false
+var exitMode = false
 var formInput = map[string]string{
 	"URL":      "",
 	"Username": "",
 	"Password": "",
 }
 
+type Entry struct {
+	URL      string
+	Username string
+	Password string
+}
+
+type Config struct {
+	Entries []Entry
+}
+
+var currentRegistryIndex = 0
+var config Config
+
 func saveConfig() {
-	// Read in existing config
-	viper.SetConfigName("config")
-	viper.AddConfigPath(".")
-	err := viper.ReadInConfig() // Find and read the config file
-	if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-		// Config file not found; ignore error
-	} else if err != nil {
-		// Config file was found but another error was produced
-		panic(fmt.Errorf("fatal error config file: %s", err))
+	newEntry := Entry{
+		URL:      formInput["URL"],
+		Username: formInput["Username"],
+		Password: formInput["Password"],
 	}
-
-	// Add new settings
-	url := formInput["URL"]
-	viper.Set(url+".username", formInput["Username"])
-	viper.Set(url+".password", formInput["Password"])
-
-	// Write the configuration
-	viper.WriteConfigAs("config.yaml")
+	config.Entries = append(config.Entries, newEntry)
+	viper.Set("Entries", config.Entries)
+	if err := viper.WriteConfig(); err != nil {
+		log.Fatalf("Error writing config: %s", err)
+	}
 }
 
 func printLineWithPadding(s tcell.Screen, str string, x int, y int, style tcell.Style, padding int) {
@@ -86,7 +107,54 @@ func drawBorder(s tcell.Screen, x1, x2, y1, y2 int, style tcell.Style) {
 	s.SetContent(x2, y2, '+', nil, style)
 }
 
+func readConfig() {
+	if err := viper.Unmarshal(&config); err != nil {
+		fmt.Printf("Unable to decode into struct, %v", err)
+	}
+}
+
+func getRepositories(url, username, password string) (Repository, error) {
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", url+"/v2/_catalog", nil)
+	if err != nil {
+		return Repository{}, err
+	}
+	req.SetBasicAuth(username, password)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return Repository{}, err
+	}
+	defer resp.Body.Close()
+
+	var repo Repository
+	err = yaml.NewDecoder(resp.Body).Decode(&repo)
+	return repo, err
+}
+
 func main() {
+	if _, err := os.Stat("config.yaml"); os.IsNotExist(err) {
+		file, err := os.Create("config.yaml")
+		if err != nil {
+			log.Fatalf("Failed to create file: %s", err)
+		}
+		file.Close()
+	}
+
+	viper.SetConfigName("config")
+	viper.AddConfigPath(".")
+
+	err := viper.ReadInConfig()
+	if err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			viper.SafeWriteConfig()
+		} else {
+			fmt.Printf("Error reading config file: %s", err)
+		}
+	}
+
+	readConfig()
+
 	// Create a new screen
 	s, err := tcell.NewScreen()
 	if err != nil {
@@ -143,104 +211,146 @@ func main() {
 			if i == formIndex {
 				currentStyle = selectedStyle
 			}
-			input := formInput[item]
-			if item == "Password" {
-				input = strings.Repeat("*", len(input))
+			if item == "Save" {
+				printCenteredLineWithPadding(s, item, xStart, startY+i, currentStyle, padding)
+			} else {
+				input := formInput[item]
+				if item == "Password" {
+					input = strings.Repeat("*", len(input))
+				}
+				printLineWithPadding(s, item+": "+input, xStart, startY+i, currentStyle, padding)
 			}
-			printLineWithPadding(s, item+": "+input, xStart, startY+i, currentStyle, padding)
 		}
-
-		printCenteredLineWithPadding(s, "Add", xStart, startY+len(formItems)+1, style, padding)
 	}
 
-	if !formMode {
-		drawMenu()
-	} else {
-		drawForm()
+	// Function to draw the registry items
+	drawRegistries := func() {
+		width, height := s.Size()
+		startY := (height - len(config.Entries)) / 2
+		padding := 10
+		maxLength := 0
+		for _, entry := range config.Entries {
+			if len(entry.URL) > maxLength {
+				maxLength = len(entry.URL)
+			}
+		}
+		maxLength += padding
+		xStart := (width - maxLength) / 2
+		xEnd := xStart + maxLength
+		drawBorder(s, xStart-1, xEnd+1, startY-1, startY+len(config.Entries)+1, style)
+
+		for i, entry := range config.Entries {
+			currentStyle := style
+			if i == currentRegistryIndex {
+				currentStyle = selectedStyle
+			}
+			printCenteredLineWithPadding(s, entry.URL, xStart, startY+i, currentStyle, padding)
+		}
 	}
 
-	// Show the screen
+	drawMenu()
 	s.Show()
 
-	// Wait for a key event
 	for {
+		if exitMode {
+			break
+		}
 		event := s.PollEvent()
 		switch event := event.(type) {
 		case *tcell.EventKey:
-			if !formMode {
-				switch event.Key() {
-				case tcell.KeyUp:
-					currentIndex--
-					if currentIndex < 0 {
-						currentIndex = len(menuItems) - 1
-					}
-				case tcell.KeyDown:
-					currentIndex++
-					if currentIndex >= len(menuItems) {
-						currentIndex = 0
-					}
-				case tcell.KeyEnter:
-					switch currentIndex {
-					case 0:
-						// Enter form mode
-						formMode = true
-					case 1:
-						// Code for "Remove registry" here
-					case 2:
-						// Code for "Connect to registry" here
-					}
-				case tcell.KeyEscape:
-					return
-				}
-			} else {
-				switch event.Key() {
-				case tcell.KeyUp:
+			switch event.Key() {
+			case tcell.KeyUp:
+				if formMode {
 					formIndex--
 					if formIndex < 0 {
 						formIndex = len(formItems) - 1
 					}
-				case tcell.KeyDown:
+				} else if registryMode {
+					currentRegistryIndex--
+					if currentRegistryIndex < 0 {
+						currentRegistryIndex = len(config.Entries) - 1
+					}
+				} else {
+					currentIndex--
+					if currentIndex < 0 {
+						currentIndex = len(menuItems) - 1
+					}
+				}
+			case tcell.KeyDown:
+				if formMode {
 					formIndex++
 					if formIndex >= len(formItems) {
 						formIndex = 0
 					}
-				case tcell.KeyBackspace2, tcell.KeyBackspace:
-					if len(formInput[formItems[formIndex]]) > 0 {
-						// Delete last character
-						formInput[formItems[formIndex]] = formInput[formItems[formIndex]][:len(formInput[formItems[formIndex]])-1]
+				} else if registryMode {
+					currentRegistryIndex++
+					if currentRegistryIndex >= len(config.Entries) {
+						currentRegistryIndex = 0
 					}
-				case tcell.KeyEnter:
-					if formIndex == len(formItems)-1 {
-						// "Add" button
+				} else {
+					currentIndex++
+					if currentIndex >= len(menuItems) {
+						currentIndex = 0
+					}
+				}
+			case tcell.KeyEnter:
+				if formMode {
+					if formItems[formIndex] == "Save" {
+						// Submit the form
 						saveConfig()
 						formMode = false
-					} else {
-						// Next field
-						formIndex++
+						formInput = map[string]string{
+							"URL":      "",
+							"Username": "",
+							"Password": "",
+						}
 					}
-				case tcell.KeyEscape:
-					// Cancel form
-					formMode = false
-				case tcell.KeyRune:
-					// Handle input
+				} else if registryMode {
+					// Get repositories for selected registry
+					selectedRegistry := config.Entries[currentRegistryIndex]
+					repositories, err := getRepositories(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password)
+					if err != nil {
+						fmt.Printf("Failed to fetch repositories: %v\n", err)
+					} else {
+						fmt.Printf("Repositories for %s:\n", selectedRegistry.URL)
+						for _, repo := range repositories {
+							fmt.Printf("- %s\n", repo)
+						}
+					}
+					registryMode = false
+				} else {
+					if currentIndex == 0 {
+						formMode = true
+					} else if currentIndex == 1 {
+						// remove registry
+					} else if currentIndex == 2 {
+						registryMode = true
+					} else if currentIndex == 3 {
+						exitMode = true
+					}
+				}
+			case tcell.KeyEscape:
+				formMode = false
+				registryMode = false
+			case tcell.KeyRune:
+				if formMode && formIndex < len(formItems) {
 					formInput[formItems[formIndex]] += string(event.Rune())
+				}
+			case tcell.KeyBackspace, tcell.KeyBackspace2:
+				if formMode && formIndex < len(formItems) {
+					formInput[formItems[formIndex]] = strings.TrimSuffix(formInput[formItems[formIndex]], formInput[formItems[formIndex]][len(formInput[formItems[formIndex]])-1:])
 				}
 			}
 
 			s.Clear()
-			if !formMode {
+			if !formMode && !registryMode && !exitMode {
 				drawMenu()
-			} else {
+			} else if formMode {
 				drawForm()
+			} else if registryMode {
+				drawRegistries()
 			}
 			s.Show()
 		}
-	}
-}
-
-func printLine(s tcell.Screen, str string, x int, y int, style tcell.Style) {
-	for _, r := range str {
-		s.SetContent(x, y, r, nil, style)
-		x++
 	}
 }
