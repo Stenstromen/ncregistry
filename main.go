@@ -13,50 +13,13 @@ import (
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/viper"
+	"github.com/stenstromen/ncregistry/types"
+	"github.com/stenstromen/ncregistry/utils"
 )
 
-type Entry struct {
-	URL      string
-	Username string
-	Password string
-}
+var config types.Config
 
-type Config struct {
-	Entries []Entry
-}
-
-type RepositoryResponse struct {
-	Repositories []string `json:"repositories"`
-}
-
-type TagResponse struct {
-	Name string   `json:"name"`
-	Tags []string `json:"tags"`
-}
-
-type ManifestResponse struct {
-	Config struct {
-		Digest string `json:"digest"`
-		Size   int    `json:"size"`
-	} `json:"config"`
-	Layers []struct {
-		Size int `json:"size"`
-	} `json:"layers"`
-}
-
-type BlobResponse struct {
-	Created string `json:"created"`
-}
-
-type TagInfo struct {
-	Name string
-	Date string
-	Size int
-}
-
-var config Config
-
-func saveConfig(newEntry Entry) {
+func saveConfig(newEntry types.Entry) {
 	config.Entries = append(config.Entries, newEntry)
 	viper.Set("Entries", config.Entries)
 	if err := viper.WriteConfig(); err != nil {
@@ -64,45 +27,45 @@ func saveConfig(newEntry Entry) {
 	}
 }
 
-func getRepositories(url, username, password string) (RepositoryResponse, error) {
+func getRepositories(url, username, password string) (types.RepositoryResponse, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url+"/v2/_catalog", nil)
 	if err != nil {
-		return RepositoryResponse{}, err
+		return types.RepositoryResponse{}, err
 	}
 	req.SetBasicAuth(username, password)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return RepositoryResponse{}, err
+		return types.RepositoryResponse{}, err
 	}
 	defer resp.Body.Close()
 
-	var repoResp RepositoryResponse
+	var repoResp types.RepositoryResponse
 	err = json.NewDecoder(resp.Body).Decode(&repoResp)
 	return repoResp, err
 }
 
-func getTags(url, username, password, repository string) (TagResponse, error) {
+func getTags(url, username, password, repository string) (types.TagResponse, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url+"/v2/"+repository+"/tags/list", nil)
 	if err != nil {
-		return TagResponse{}, err
+		return types.TagResponse{}, err
 	}
 	req.SetBasicAuth(username, password)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return TagResponse{}, err
+		return types.TagResponse{}, err
 	}
 	defer resp.Body.Close()
 
-	var tagResp TagResponse
+	var tagResp types.TagResponse
 	err = json.NewDecoder(resp.Body).Decode(&tagResp)
 	return tagResp, err
 }
 
-func getManifest(url, username, password, repository, tag string) (*ManifestResponse, error) {
+func getManifest(url, username, password, repository, tag string) (*types.ManifestResponse, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url+"/v2/"+repository+"/manifests/"+tag, nil)
 	if err != nil {
@@ -117,7 +80,7 @@ func getManifest(url, username, password, repository, tag string) (*ManifestResp
 	}
 	defer resp.Body.Close()
 
-	var manifestResp ManifestResponse
+	var manifestResp types.ManifestResponse
 	err = json.NewDecoder(resp.Body).Decode(&manifestResp)
 	if err != nil {
 		return nil, err
@@ -126,21 +89,21 @@ func getManifest(url, username, password, repository, tag string) (*ManifestResp
 	return &manifestResp, nil
 }
 
-func getBlob(url, username, password, repository, digest string) (BlobResponse, error) {
+func getBlob(url, username, password, repository, digest string) (types.BlobResponse, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url+"/v2/"+repository+"/blobs/"+digest, nil)
 	if err != nil {
-		return BlobResponse{}, err
+		return types.BlobResponse{}, err
 	}
 	req.SetBasicAuth(username, password)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return BlobResponse{}, err
+		return types.BlobResponse{}, err
 	}
 	defer resp.Body.Close()
 
-	var blobResp BlobResponse
+	var blobResp types.BlobResponse
 	err = json.NewDecoder(resp.Body).Decode(&blobResp)
 	return blobResp, err
 }
@@ -170,49 +133,6 @@ func deleteManifest(url, username, password, repository, digest string) error {
 	}
 
 	return nil
-}
-
-func convertToDaysAgo(timestamp string) (string, error) {
-	layout := "2006-01-02T15:04:05.999999999Z" // Go layout string to parse the timestamp
-	t, err := time.Parse(layout, timestamp)
-	if err != nil {
-		return "", err
-	}
-
-	duration := time.Since(t)
-	days := int(duration.Hours() / 24)
-	return fmt.Sprintf("%d days ago", days), nil
-}
-
-func formatBytes(bytes int) string {
-	const (
-		B  = 1
-		KB = B * 1024
-		MB = KB * 1024
-		GB = MB * 1024
-	)
-
-	var (
-		value float64
-		unit  string
-	)
-
-	switch {
-	case bytes >= GB:
-		value = float64(bytes) / float64(GB)
-		unit = "GB"
-	case bytes >= MB:
-		value = float64(bytes) / float64(MB)
-		unit = "MB"
-	case bytes >= KB:
-		value = float64(bytes) / float64(KB)
-		unit = "KB"
-	default:
-		value = float64(bytes)
-		unit = "B"
-	}
-
-	return fmt.Sprintf("%.2f %s", value, unit)
 }
 
 func main() {
@@ -320,7 +240,7 @@ func main() {
 				return
 			}
 
-			saveConfig(Entry{URL: url, Username: username, Password: password})
+			saveConfig(types.Entry{URL: url, Username: username, Password: password})
 
 		case "Remove registry":
 			var urls []string
@@ -368,7 +288,7 @@ func main() {
 				time.Sleep(2 * time.Second)
 				continue
 			}
-
+		Registrylist:
 			prompt := promptui.Select{
 				Label: "Select Registry",
 				Items: urls,
@@ -395,9 +315,14 @@ func main() {
 				return
 			}
 
+			repoItems := make([]string, len(repositories.Repositories)+1)
+			repoItems[0] = "../"
+			copy(repoItems[1:], repositories.Repositories)
+
+		Repolist:
 			prompt = promptui.Select{
 				Label: "Select Repository",
-				Items: repositories.Repositories,
+				Items: repoItems,
 				Size:  30,
 				Templates: &promptui.SelectTemplates{
 					Active:   `👉 {{ . | cyan | bold }}`,
@@ -408,6 +333,11 @@ func main() {
 			}
 
 			_, result, err = prompt.Run()
+
+			if result == "../" {
+				goto Registrylist
+			}
+
 			selectedRepository := result
 
 			if err != nil {
@@ -427,7 +357,7 @@ func main() {
 				continue
 			}
 
-			tagInfos := make([]TagInfo, len(tags.Tags))
+			tagInfos := make([]types.TagInfo, len(tags.Tags))
 
 			for i, tag := range tags.Tags {
 				manifest, err := getManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result, tag)
@@ -435,7 +365,7 @@ func main() {
 				if err != nil {
 					// Check if error is because manifest doesn't exist
 					if strings.Contains(err.Error(), "MANIFEST_UNKNOWN") {
-						tagInfos[i] = TagInfo{
+						tagInfos[i] = types.TagInfo{
 							Name: tag + " (empty)",
 							Date: "N/A",
 							Size: 0,
@@ -457,13 +387,13 @@ func main() {
 						return
 					}
 
-					daysAgo, err := convertToDaysAgo(blobResp.Created)
+					daysAgo, err := utils.ConvertToDaysAgo(blobResp.Created)
 					if err != nil {
 						fmt.Println("Failed to convert timestamp:", err)
 						return
 					}
 
-					tagInfos[i] = TagInfo{
+					tagInfos[i] = types.TagInfo{
 						Name: tag,
 						Date: daysAgo,
 						Size: totalSize, // Add size here
@@ -471,11 +401,12 @@ func main() {
 				}
 			}
 
-			tagItems := make([]string, len(tagInfos))
+			tagItems := make([]string, len(tagInfos)+1)
+			tagItems[0] = "../"
 			for i, info := range tagInfos {
-				tagItems[i] = fmt.Sprintf("%s (Created %s) %s", info.Name, info.Date, formatBytes(info.Size))
+				tagItems[i+1] = fmt.Sprintf("%s (Created %s) %s", info.Name, info.Date, utils.FormatBytes(info.Size))
 			}
-
+		Taglist:
 			prompt = promptui.Select{
 				Label: "Select Tag",
 				Items: tagItems,
@@ -491,6 +422,10 @@ func main() {
 			if err != nil {
 				fmt.Printf("Prompt failed %v\n", err)
 				return
+			}
+
+			if result == "../" {
+				goto Repolist
 			}
 
 			selectedTag := result[:strings.Index(result, " (")]
@@ -552,7 +487,7 @@ func main() {
 
 					fmt.Println("Delete successful")
 					time.Sleep(2 * time.Second)
-
+					goto Taglist
 				}
 			}
 
