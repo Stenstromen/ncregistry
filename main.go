@@ -1,184 +1,134 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/viper"
+	"github.com/stenstromen/ncregistry/config"
+	"github.com/stenstromen/ncregistry/registry"
 	"github.com/stenstromen/ncregistry/types"
 	"github.com/stenstromen/ncregistry/utils"
 )
 
-var config types.Config
+func promptSelect(label string, items []string) (string, error) {
+	prompt := promptui.Select{
+		HideSelected: true,
+		Label:        label,
+		Items:        items,
+		Templates: &promptui.SelectTemplates{
+			Active:   `👉 {{ . | cyan | bold }}`,
+			Inactive: `   {{ . | cyan }}`,
+			Selected: `{{ "✔" | green | bold }} {{ "Selected Option:" | bold }} {{ . | cyan }}`,
+			Help:     `{{ "Use ↑/↓ to move and Enter to select" | bold }}`,
+		},
+	}
+	_, result, err := prompt.Run()
 
-func saveConfig(newEntry types.Entry) {
-	config.Entries = append(config.Entries, newEntry)
-	viper.Set("Entries", config.Entries)
+	return result, err
+}
+
+func promptInput(label string, mask rune) (string, error) {
+	prompt := promptui.Prompt{
+		Label: label,
+		Mask:  mask,
+		Templates: &promptui.PromptTemplates{
+			Prompt:  `👉 {{ . | cyan | bold }} `,
+			Valid:   `👉 {{ . | green | bold }} `,
+			Invalid: `👉 {{ . | red | bold }} `,
+			Success: `👉 {{ . | bold }} `,
+		},
+	}
+	result, err := prompt.Run()
+
+	return result, err
+}
+
+func handlePromptError(err error) {
+	fmt.Printf("Prompt failed %v\n", err)
+}
+
+func addRegistry() {
+	utils.ClearTerminal()
+	url, err := promptInput("Registry URL", 0)
+	if err != nil {
+		handlePromptError(err)
+		return
+	}
+
+	username, err := promptInput("Registry Username", 0)
+	if err != nil {
+		handlePromptError(err)
+		return
+	}
+
+	if !strings.HasPrefix(url, "https://") {
+		url = "https://" + url
+	}
+
+	password, err := promptInput("Registry Password", '*')
+	if err != nil {
+		handlePromptError(err)
+		return
+	}
+
+	config.SaveConfig(types.Entry{URL: url, Username: username, Password: password})
+}
+
+func removeRegistry() {
+	utils.ClearTerminal()
+	var urls []string
+	urls = append(urls, "../")
+	for _, entry := range config.Config.Entries {
+		urls = append(urls, strings.Split(entry.URL, "://")[1])
+	}
+
+	if len(urls) == 1 {
+		fmt.Println("No registries found. Please add a registry first.")
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	prompt := promptui.Select{
+		HideSelected: true,
+		Label:        "Select Registry",
+		Items:        urls,
+		Templates: &promptui.SelectTemplates{
+			Active:   `👉 {{ . | cyan | bold }}`,
+			Inactive: `   {{ . | cyan }}`,
+			Selected: `{{ "✔" | green | bold }} {{ "Selected Option:" | bold }} {{ . | cyan }}`,
+			Help:     `{{ "Remove registry" | bold }}`,
+		},
+	}
+
+	i, _, err := prompt.Run()
+	if err != nil {
+		fmt.Printf("Prompt failed %v\n", err)
+		return
+	}
+
+	if i == 0 {
+		return
+	}
+
+	config.Config.Entries = append(config.Config.Entries[:i-1], config.Config.Entries[i:]...)
+	viper.Set("Entries", config.Config.Entries)
 	if err := viper.WriteConfig(); err != nil {
 		log.Fatalf("Error writing config: %s", err)
 	}
 }
 
-func getRepositories(url, username, password string) (types.RepositoryResponse, error) {
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", url+"/v2/_catalog", nil)
-	if err != nil {
-		return types.RepositoryResponse{}, err
-	}
-	req.SetBasicAuth(username, password)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return types.RepositoryResponse{}, err
-	}
-	defer resp.Body.Close()
-
-	var repoResp types.RepositoryResponse
-	err = json.NewDecoder(resp.Body).Decode(&repoResp)
-	return repoResp, err
-}
-
-func getTags(url, username, password, repository string) (types.TagResponse, error) {
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", url+"/v2/"+repository+"/tags/list", nil)
-	if err != nil {
-		return types.TagResponse{}, err
-	}
-	req.SetBasicAuth(username, password)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return types.TagResponse{}, err
-	}
-	defer resp.Body.Close()
-
-	var tagResp types.TagResponse
-	err = json.NewDecoder(resp.Body).Decode(&tagResp)
-	return tagResp, err
-}
-
-func getManifest(url, username, password, repository, tag string) (*types.ManifestResponse, error) {
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", url+"/v2/"+repository+"/manifests/"+tag, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
-	req.SetBasicAuth(username, password)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var manifestResp types.ManifestResponse
-	err = json.NewDecoder(resp.Body).Decode(&manifestResp)
-	if err != nil {
-		return nil, err
-	}
-
-	return &manifestResp, nil
-}
-
-func getBlob(url, username, password, repository, digest string) (types.BlobResponse, error) {
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", url+"/v2/"+repository+"/blobs/"+digest, nil)
-	if err != nil {
-		return types.BlobResponse{}, err
-	}
-	req.SetBasicAuth(username, password)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return types.BlobResponse{}, err
-	}
-	defer resp.Body.Close()
-
-	var blobResp types.BlobResponse
-	err = json.NewDecoder(resp.Body).Decode(&blobResp)
-	return blobResp, err
-}
-
-func deleteManifest(url, username, password, repository, digest string) error {
-	client := &http.Client{}
-	req, err := http.NewRequest("DELETE", url+"/v2/"+repository+"/manifests/"+digest, nil)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
-	req.SetBasicAuth(username, password)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusAccepted {
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read response body: %v", err)
-		}
-		return fmt.Errorf("unexpected response from server: %s, body: %s", resp.Status, string(bodyBytes))
-	}
-
-	return nil
-}
-
 func main() {
-	if _, err := os.Stat("config.yaml"); os.IsNotExist(err) {
-		file, err := os.Create("config.yaml")
-		if err != nil {
-			log.Fatalf("Failed to create file: %s", err)
-		}
-		file.Close()
-	}
-
-	viper.SetConfigName("config")
-	viper.AddConfigPath(".")
-
-	err := viper.ReadInConfig()
-	if err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			viper.SafeWriteConfig()
-		} else {
-			fmt.Printf("Error reading config file: %s", err)
-		}
-	}
-
-	if err := viper.Unmarshal(&config); err != nil {
-		fmt.Printf("Unable to decode into struct, %v", err)
-	}
+	config.InitConfig()
 
 	for {
 
-		clear := exec.Command("clear")
-		clear.Stdout = os.Stdout
-		clear.Run()
+		utils.ClearTerminal()
 
-		prompt := promptui.Select{
-			Label: "Main Menu",
-			Items: []string{"Add registry", "Remove registry", "Connect to registry", "Exit"},
-			Templates: &promptui.SelectTemplates{
-				Active:   `👉 {{ . | cyan | bold }}`,
-				Inactive: `   {{ . | cyan }}`,
-				Selected: `{{ "✔" | green | bold }} {{ "Selected Option:" | bold }} {{ . | cyan }}`,
-				Help:     `{{ "Use ↑/↓ to move and Enter to select" | bold }}`,
-			},
-		}
-
-		_, result, err := prompt.Run()
-
+		result, err := promptSelect("Main Menu", []string{"Add registry", "Remove registry", "Connect to registry", "Exit"})
 		if err != nil {
 			fmt.Printf("Prompt failed %v\n", err)
 			return
@@ -186,130 +136,52 @@ func main() {
 
 		switch result {
 		case "Add registry":
-			prompt := promptui.Prompt{
-				Label: "Registry URL",
-				Templates: &promptui.PromptTemplates{
-					Prompt:  `👉 {{ . | cyan | bold }} `,
-					Valid:   `👉 {{ . | green | bold }} `,
-					Invalid: `👉 {{ . | red | bold }} `,
-					Success: `👉 {{ . | bold }} `,
-				},
-			}
-
-			url, err := prompt.Run()
-			if err != nil {
-				fmt.Printf("Prompt failed %v\n", err)
-				return
-			}
-
-			prompt = promptui.Prompt{
-				Label: "Registry Username",
-				Templates: &promptui.PromptTemplates{
-					Prompt:  `👉 {{ . | cyan | bold }} `,
-					Valid:   `👉 {{ . | green | bold }} `,
-					Invalid: `👉 {{ . | red | bold }} `,
-					Success: `👉 {{ . | bold }} `,
-				},
-			}
-
-			username, err := prompt.Run()
-			if err != nil {
-				fmt.Printf("Prompt failed %v\n", err)
-				return
-			}
-
-			// Prepend "https://" if not present
-			if !strings.HasPrefix(url, "https://") {
-				url = "https://" + url
-			}
-
-			prompt = promptui.Prompt{
-				Label: "Registry Password",
-				Mask:  '*',
-				Templates: &promptui.PromptTemplates{
-					Prompt:  `👉 {{ . | cyan | bold }} `,
-					Valid:   `👉 {{ . | green | bold }} `,
-					Invalid: `👉 {{ . | red | bold }} `,
-					Success: `👉 {{ . | bold }} `,
-				},
-			}
-
-			password, err := prompt.Run()
-			if err != nil {
-				fmt.Printf("Prompt failed %v\n", err)
-				return
-			}
-
-			saveConfig(types.Entry{URL: url, Username: username, Password: password})
+			addRegistry()
 
 		case "Remove registry":
-			var urls []string
-			for _, entry := range config.Entries {
-				urls = append(urls, strings.Split(entry.URL, "://")[1])
-			}
-
-			if (len(urls)) == 0 {
-				fmt.Println("No registries found. Please add a registry first.")
-				time.Sleep(2 * time.Second)
-				continue
-			}
-
-			prompt := promptui.Select{
-				Label: "Select Registry",
-				Items: urls,
-				Templates: &promptui.SelectTemplates{
-					Active:   `👉 {{ . | cyan | bold }}`,
-					Inactive: `   {{ . | cyan }}`,
-					Selected: `{{ "✔" | green | bold }} {{ "Selected Option:" | bold }} {{ . | cyan }}`,
-					Help:     `{{ "Press ESC to go back" | bold }}`,
-				},
-			}
-
-			i, _, err := prompt.Run()
-			if err != nil {
-				fmt.Printf("Prompt failed %v\n", err)
-				return
-			}
-
-			config.Entries = append(config.Entries[:i], config.Entries[i+1:]...)
-			viper.Set("Entries", config.Entries)
-			if err := viper.WriteConfig(); err != nil {
-				log.Fatalf("Error writing config: %s", err)
-			}
+			removeRegistry()
 
 		case "Connect to registry":
+			utils.ClearTerminal()
 			var urls []string
-			for _, entry := range config.Entries {
+			urls = append(urls, "../")
+			urls[0] = "../"
+			for _, entry := range config.Config.Entries {
 				urls = append(urls, strings.Split(entry.URL, "://")[1])
 			}
 
-			if (len(urls)) == 0 {
+			if (len(urls)) == 1 {
 				fmt.Println("No registries found. Please add a registry first.")
 				time.Sleep(2 * time.Second)
 				continue
 			}
 		Registrylist:
 			prompt := promptui.Select{
-				Label: "Select Registry",
-				Items: urls,
+				Label:        "Select Registry",
+				HideSelected: true,
+				Items:        urls,
 				Templates: &promptui.SelectTemplates{
 					Active:   `👉 {{ . | cyan | bold }}`,
 					Inactive: `   {{ . | cyan }}`,
 					Selected: `{{ "✔" | green | bold }} {{ "Selected Option:" | bold }} {{ . | cyan }}`,
-					Help:     `{{ "Press ESC to go back" | bold }}`,
+					Help:     `{{ "Connect to registry" | bold }}`,
 				},
 			}
 
-			i, _, err := prompt.Run()
+			i, result, err := prompt.Run()
 			if err != nil {
 				fmt.Printf("Prompt failed %v\n", err)
 				return
 			}
 
-			selectedRegistry := config.Entries[i]
+			if result == "../" {
+				continue
+			}
+
+			selectedRegistry := config.Config.Entries[i-1]
 
 			fmt.Printf("Repositories for %s:\n", strings.Split(selectedRegistry.URL, "://")[1])
-			repositories, err := getRepositories(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password)
+			repositories, err := registry.GetRepositories(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password)
 			if err != nil {
 				fmt.Println("Failed to fetch repositories:", err)
 				return
@@ -321,14 +193,15 @@ func main() {
 
 		Repolist:
 			prompt = promptui.Select{
-				Label: "Select Repository",
-				Items: repoItems,
-				Size:  30,
+				Label:        "Select Repository",
+				HideHelp:     true,
+				HideSelected: true,
+				Items:        repoItems,
+				Size:         30,
 				Templates: &promptui.SelectTemplates{
 					Active:   `👉 {{ . | cyan | bold }}`,
 					Inactive: `   {{ . | cyan }}`,
 					Selected: `{{ "✔" | green | bold }} {{ "Selected Option:" | bold }} {{ . | cyan }}`,
-					Help:     `{{ "Press ESC to go back" | bold }}`,
 				},
 			}
 
@@ -345,7 +218,7 @@ func main() {
 				return
 			}
 
-			tags, err := getTags(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result)
+			tags, err := registry.GetTags(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result)
 			if err != nil {
 				fmt.Println("Failed to fetch tags:", err)
 				return
@@ -360,7 +233,7 @@ func main() {
 			tagInfos := make([]types.TagInfo, len(tags.Tags))
 
 			for i, tag := range tags.Tags {
-				manifest, err := getManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result, tag)
+				manifest, err := registry.GetManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result, tag)
 				digest := manifest.Config.Digest
 				if err != nil {
 					// Check if error is because manifest doesn't exist
@@ -381,7 +254,7 @@ func main() {
 						totalSize += layer.Size
 					}
 
-					blobResp, err := getBlob(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result, digest)
+					blobResp, err := registry.GetBlob(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result, digest)
 					if err != nil {
 						fmt.Println("Failed to fetch blob:", err)
 						return
@@ -407,15 +280,17 @@ func main() {
 				tagItems[i+1] = fmt.Sprintf("%s (Created %s) %s", info.Name, info.Date, utils.FormatBytes(info.Size))
 			}
 		Taglist:
+			utils.ClearTerminal()
 			prompt = promptui.Select{
-				Label: "Select Tag",
-				Items: tagItems,
-				Size:  100,
+				Label:        "Select Tag",
+				HideHelp:     true,
+				HideSelected: true,
+				Items:        tagItems,
+				Size:         100,
 				Templates: &promptui.SelectTemplates{
 					Active:   `👉 {{ . | cyan | bold }}`,
 					Inactive: `   {{ . | cyan }}`,
 					Selected: `{{ "✔" | green | bold }} {{ "Selected Option:" | bold }} {{ . | cyan }}`,
-					Help:     `{{ "Press ESC to go back" | bold }}`,
 				},
 			}
 			_, result, err = prompt.Run()
@@ -431,26 +306,31 @@ func main() {
 			selectedTag := result[:strings.Index(result, " (")]
 
 			prompt = promptui.Select{
-				Label: "Select Action",
-				Items: []string{"Pull", "Delete", "Exit"},
+				Label:        "Select Action",
+				HideHelp:     true,
+				HideSelected: true,
+				Items:        []string{"../", "Pull", "Delete"},
 				Templates: &promptui.SelectTemplates{
 					Active:   `👉 {{ . | cyan | bold }}`,
 					Inactive: `   {{ . | cyan }}`,
 					Selected: `{{ "✔" | green | bold }} {{ "Selected Option:" | bold }} {{ . | cyan }}`,
-					Help:     `{{ "Press ESC to go back" | bold }}`,
 				},
 			}
 
 			_, result, err = prompt.Run()
-			if err != nil {
-				fmt.Printf("Prompt failed %v\n", err)
-				return
+			if err != nil || result == "../" {
+				goto Taglist
 			}
 
 			switch result {
 			case "Pull":
 				fmt.Println("Pulling...")
-				time.Sleep(2 * time.Second)
+				err = registry.DockerPull(strings.Split(selectedRegistry.URL, "://")[1], selectedRepository, selectedTag)
+				if err != nil {
+					fmt.Println("Failed to pull image:", err)
+					return
+				}
+				goto Taglist
 
 			case "Delete":
 				prompt = promptui.Select{
@@ -471,7 +351,7 @@ func main() {
 				}
 
 				if result == "Yes" {
-					manifest, err := getManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, selectedRepository, selectedTag)
+					manifest, err := registry.GetManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, selectedRepository, selectedTag)
 					digest := manifest.Config.Digest
 					if err != nil {
 						fmt.Println("Failed to fetch manifest:", err)
@@ -479,7 +359,7 @@ func main() {
 					}
 
 					fmt.Println("Deleting...")
-					err = deleteManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, selectedRepository, digest)
+					err = registry.DeleteManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, selectedRepository, digest)
 					if err != nil {
 						fmt.Println("Failed to delete manifest:", err)
 						return
@@ -490,9 +370,9 @@ func main() {
 					goto Taglist
 				}
 			}
-
 		case "Exit":
 			return
 		}
+
 	}
 }

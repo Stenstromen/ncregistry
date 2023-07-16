@@ -2,8 +2,24 @@ package utils
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
 	"time"
 )
+
+func ClearTerminal() {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "cls")
+	default: // For Unix-like systems
+		cmd = exec.Command("clear")
+	}
+
+	cmd.Stdout = os.Stdout
+	cmd.Run()
+}
 
 func ConvertToDaysAgo(timestamp string) (string, error) {
 	layout := "2006-01-02T15:04:05.999999999Z" // Go layout string to parse the timestamp
