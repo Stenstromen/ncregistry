@@ -37,7 +37,11 @@ type TagResponse struct {
 type ManifestResponse struct {
 	Config struct {
 		Digest string `json:"digest"`
+		Size   int    `json:"size"`
 	} `json:"config"`
+	Layers []struct {
+		Size int `json:"size"`
+	} `json:"layers"`
 }
 
 type BlobResponse struct {
@@ -47,6 +51,7 @@ type BlobResponse struct {
 type TagInfo struct {
 	Name string
 	Date string
+	Size int
 }
 
 var config Config
@@ -97,28 +102,28 @@ func getTags(url, username, password, repository string) (TagResponse, error) {
 	return tagResp, err
 }
 
-func getManifest(url, username, password, repository, tag string) (string, error) {
+func getManifest(url, username, password, repository, tag string) (*ManifestResponse, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url+"/v2/"+repository+"/manifests/"+tag, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json")
 	req.SetBasicAuth(username, password)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	var manifestResp ManifestResponse
 	err = json.NewDecoder(resp.Body).Decode(&manifestResp)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return manifestResp.Config.Digest, nil
+	return &manifestResp, nil
 }
 
 func getBlob(url, username, password, repository, digest string) (BlobResponse, error) {
@@ -177,6 +182,37 @@ func convertToDaysAgo(timestamp string) (string, error) {
 	duration := time.Since(t)
 	days := int(duration.Hours() / 24)
 	return fmt.Sprintf("%d days ago", days), nil
+}
+
+func formatBytes(bytes int) string {
+	const (
+		B  = 1
+		KB = B * 1024
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+
+	var (
+		value float64
+		unit  string
+	)
+
+	switch {
+	case bytes >= GB:
+		value = float64(bytes) / float64(GB)
+		unit = "GB"
+	case bytes >= MB:
+		value = float64(bytes) / float64(MB)
+		unit = "MB"
+	case bytes >= KB:
+		value = float64(bytes) / float64(KB)
+		unit = "KB"
+	default:
+		value = float64(bytes)
+		unit = "B"
+	}
+
+	return fmt.Sprintf("%.2f %s", value, unit)
 }
 
 func main() {
@@ -362,7 +398,7 @@ func main() {
 			prompt = promptui.Select{
 				Label: "Select Repository",
 				Items: repositories.Repositories,
-				Size:  100,
+				Size:  30,
 				Templates: &promptui.SelectTemplates{
 					Active:   `👉 {{ . | cyan | bold }}`,
 					Inactive: `   {{ . | cyan }}`,
@@ -394,33 +430,50 @@ func main() {
 			tagInfos := make([]TagInfo, len(tags.Tags))
 
 			for i, tag := range tags.Tags {
-				digest, err := getManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result, tag)
+				manifest, err := getManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result, tag)
+				digest := manifest.Config.Digest
 				if err != nil {
-					fmt.Println("Failed to fetch manifest:", err)
-					return
-				}
+					// Check if error is because manifest doesn't exist
+					if strings.Contains(err.Error(), "MANIFEST_UNKNOWN") {
+						tagInfos[i] = TagInfo{
+							Name: tag + " (empty)",
+							Date: "N/A",
+							Size: 0,
+						}
+					} else {
+						fmt.Println("Failed to fetch manifest:", err)
+						return
+					}
+				} else {
+					// Calculate total size
+					totalSize := manifest.Config.Size
+					for _, layer := range manifest.Layers {
+						totalSize += layer.Size
+					}
 
-				blobResp, err := getBlob(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result, digest)
-				if err != nil {
-					fmt.Println("Failed to fetch blob:", err)
-					return
-				}
+					blobResp, err := getBlob(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result, digest)
+					if err != nil {
+						fmt.Println("Failed to fetch blob:", err)
+						return
+					}
 
-				daysAgo, err := convertToDaysAgo(blobResp.Created)
-				if err != nil {
-					fmt.Println("Failed to convert timestamp:", err)
-					return
-				}
+					daysAgo, err := convertToDaysAgo(blobResp.Created)
+					if err != nil {
+						fmt.Println("Failed to convert timestamp:", err)
+						return
+					}
 
-				tagInfos[i] = TagInfo{
-					Name: tag,
-					Date: daysAgo,
+					tagInfos[i] = TagInfo{
+						Name: tag,
+						Date: daysAgo,
+						Size: totalSize, // Add size here
+					}
 				}
 			}
 
 			tagItems := make([]string, len(tagInfos))
 			for i, info := range tagInfos {
-				tagItems[i] = fmt.Sprintf("%s (Created %s)", info.Name, info.Date)
+				tagItems[i] = fmt.Sprintf("%s (Created %s) %s", info.Name, info.Date, formatBytes(info.Size))
 			}
 
 			prompt = promptui.Select{
@@ -483,7 +536,8 @@ func main() {
 				}
 
 				if result == "Yes" {
-					digest, err := getManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, selectedRepository, selectedTag)
+					manifest, err := getManifest(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, selectedRepository, selectedTag)
+					digest := manifest.Config.Digest
 					if err != nil {
 						fmt.Println("Failed to fetch manifest:", err)
 						return
