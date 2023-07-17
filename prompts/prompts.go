@@ -113,7 +113,7 @@ func RemoveRegistry() {
 	}
 }
 
-func ConnectToRegistry() {
+func getRegistryURLs() []string {
 	var urls []string
 	urls = append(urls, "../")
 	urls[0] = "../"
@@ -124,8 +124,22 @@ func ConnectToRegistry() {
 	if (len(urls)) == 1 {
 		fmt.Println("No registries found. Please add a registry first.")
 		time.Sleep(2 * time.Second)
-		return
 	}
+	return urls
+}
+
+func getRepoItems(repositories types.RepositoryResponse) (result string, err error) {
+	repoItems := make([]string, len(repositories.Repositories)+1)
+	repoItems[0] = "../"
+	copy(repoItems[1:], repositories.Repositories)
+
+	_, result, err = promptSelect("Select Repository", repoItems)
+
+	return result, err
+}
+
+func ConnectToRegistry() {
+	urls := getRegistryURLs()
 Registrylist:
 	i, result, err := promptSelect("Select Registry", urls)
 	if err != nil {
@@ -144,24 +158,18 @@ Registrylist:
 		fmt.Println("Failed to fetch repositories:", err)
 		return
 	}
-
-	repoItems := make([]string, len(repositories.Repositories)+1)
-	repoItems[0] = "../"
-	copy(repoItems[1:], repositories.Repositories)
-
 Repolist:
-	_, result, err = promptSelect("Select Repository", repoItems)
+	result, err = getRepoItems(repositories)
+	if err != nil {
+		fmt.Printf("Prompt failed %v\n", err)
+		return
+	}
 
 	if result == "../" {
 		goto Registrylist
 	}
 
 	selectedRepository := result
-
-	if err != nil {
-		fmt.Printf("Prompt failed %v\n", err)
-		return
-	}
 
 	tags, err := registry.GetTags(selectedRegistry.URL, selectedRegistry.Username, selectedRegistry.Password, result)
 	if err != nil {
