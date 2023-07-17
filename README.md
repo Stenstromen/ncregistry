@@ -39,3 +39,9 @@ go build
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color:cyan">Remove registry</span><br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color:cyan">Exit</span><br>
 </div>
+
+## Limitations
+* Currently only supports (tested) with the official Docker registry server (registry).
+* Only supports Docker v2 API.
+* Only supports basic authentication (username/password).
+* Only supports HTTPS connections (no HTTP).
