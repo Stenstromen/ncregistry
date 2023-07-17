@@ -1,0 +1,25 @@
+project_name: ncregistry
+builds:
+  - env: [CGO_ENABLED=0]
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    binary: ncregistry
+archives:
+  - replacements:
+      darwin: Darwin
+      linux: Linux
+      amd64: x86_64
+brews:
+  - name: ncregistry
+    tap:
+      owner: stenstromen
+      name: homebrew-tap
+    commit_author:
+      name: stenstromen
+    folder: Formula
+    homepage: https://github.com/Stenstromen/ncregistry
+    description: The NcRegistry Go binary is a powerful command-line tool designed to streamline interaction with Docker registries

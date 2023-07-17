@@ -4,8 +4,6 @@ go 1.20
 
 replace github.com/stenstromen/ncregistry => ./
 
-require github.com/gdamore/tcell v1.4.0
-
 require (
 	github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
@@ -23,13 +21,8 @@ require (
 )
 
 require (
-	github.com/gdamore/encoding v1.0.0 // indirect
-	github.com/lucasb-eyer/go-colorful v1.0.3 // indirect
 	github.com/manifoldco/promptui v0.9.0
-	github.com/mattn/go-runewidth v0.0.9 // indirect
-	github.com/nsf/termbox-go v1.1.1
 	github.com/spf13/viper v1.16.0
 	golang.org/x/sys v0.8.0 // indirect
 	golang.org/x/text v0.9.0 // indirect
-	gopkg.in/yaml.v2 v2.4.0
 )
